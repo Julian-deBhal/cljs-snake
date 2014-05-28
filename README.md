@@ -5,6 +5,7 @@ A Clojurescript implementation of the classic snake game.
 ## Usage
 ####
 lein cljsbuild once # you only need to do this once
+
 lein figwheel # then point your browser at localhost:3449
 ####
 
