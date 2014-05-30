@@ -17,7 +17,7 @@
   :cljsbuild {
               :builds [{:id "cljs-snake"
                         :source-paths ["src"]
-                        :compiler { :output-to "resources/public/js/compiled/cljs_snake.js"
+                        :compiler {:output-to "resources/public/js/compiled/cljs_snake.js"
                                    :output-dir "resources/public/js/compiled/out"
                                    :optimizations :none
                                    :source-map true}}]}
