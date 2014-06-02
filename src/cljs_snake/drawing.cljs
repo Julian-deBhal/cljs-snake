@@ -7,7 +7,6 @@
 
 (enable-console-print!)
 
-(def canvas (.getElementById js/document "canvas"))
 (def background-color-string "#ffffdd")
 (def border-color-string "#000000")
 (def snake-color-string "#00dd00")
@@ -69,14 +68,13 @@
 
 (defn immediate-mode-render! [{:keys [columns rows] :as state}]
   ;; (println (str "immediate-mode-render! state: " state))
-  (let [ctx (get-context "canvas")
+  (let [ctx (get-context "snakeCanvas")
         [canvas-width canvas-height] (canvas-size columns rows)
         state (assoc state
                 :ctx ctx
                 :canvas-height canvas-height
                 :canvas-width canvas-width)]
     (do
-      (.setTransform ctx  1 0 0 1 0 0)
       (draw-background! state)
       (draw-border! state)
       (.setTransform ctx  1 0 0 1 square-size square-size)
@@ -87,4 +85,5 @@
       ;; (set! (.-fillStyle ctx) "white")
       ;; (set! (.-font ctx) "bold 12px Arial")
       ;; (.fillText ctx (str "Score: " (:score state)) 0 -3)
+      (.setTransform ctx  1 0 0 1 0 0)
       )))
