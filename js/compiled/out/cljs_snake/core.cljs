@@ -1,33 +1,28 @@
 (ns cljs-snake.core
   (:require
+   [cljs-snake.drawing :as drawing]
    [sablono.core :as sab :include-macros true]
    [figwheel.client :as fw :include-macros true]
-   [cljs.core.async :as async :refer [<! >! chan alt! alts! timeout]]
+   [cljs.core.async :as async
+    :refer [<! >! chan alts! timeout sliding-buffer]]
    [cemerick.cljs.test :as t])
   (:require-macros [cljs.core.async.macros :refer [go]]
                    [cemerick.cljs.test :refer (is deftest with-test run-tests testing test-var)]))
 (enable-console-print!)
 
-(declare immediate-mode-render!)
-
-(def canvas (.getElementById js/document "canvas"))
-(def background-color-string "#ffffdd")
-(def border-color-string "#000000")
-(def snake-color-string "#00dd00")
-(def food-color-string "#ff0000")
-
-(def columns 18)
-(def rows 14)
-(def square-size 17)
-(def canvas-width (* (+ 2 columns) square-size))
-(def canvas-height (* (+ 2 rows) square-size))
-(def starting-snake-length 3) ; Snakes starting length
+;(declare immediate-mode-render!)
 
 (def tick-speed 150)
 
 (def keycode-a 65)
 
+;;; input-chan collects inputs from mouse/touch and keyboard.
+;;; Two types of inputs will be put into this channel:
+;;; 1) single inputs from the keyboard - :left :up :down :right
+;;; 2) double inputs from mouse/touch - :upleft :upright :downleft :downright
 (def input-chan (chan))
+
+(def starting-snake-length 3) ; Snakes starting length
 
 (defn reset-state
   ([]
@@ -40,67 +35,27 @@
        :score 0
        :food-pos nil
        :direction :right
-       :snake-tail cljs.core.PersistentQueue.EMPTY)))
+       :snake-tail cljs.core.PersistentQueue.EMPTY
+       :columns 18
+       :rows 14
+       :starting-snake-length 3)))
+
+;; (def columns 18)
+;; (def rows 14)
 
 (fw/defonce state (atom (reset-state)))
 
-(def all-positions (for [x (range columns)
-                         y (range rows)]
-                     [x y]))
+(defn disable-ai [{:keys [ai] :as state}]
+  (assoc state :ai false))
 
-;;; Drawing code
-(defn get-context [name]
-  (-> js/document
-      (.getElementById name)
-      (.getContext "2d")))
+(defn disable-ai! []
+  (swap! state disable-ai))
 
-(defn draw-coords!
-  ([ctx [x y]]
-      (.fillRect ctx (* x square-size) (* y square-size)
-                 square-size square-size))
-  ([ctx [x y] color-string]
-     (set! (.-fillStyle ctx) color-string)
-     (draw-coords! ctx [x y])))
 
-(defn draw-snake-head! [{:keys [x y ctx] :as state}]
-  (draw-coords! ctx [x y] snake-color-string))
-
-(defn draw-snake-tail! [{:keys [snake-tail ctx] :as state}]
-  (set! (.-fillStyle ctx) snake-color-string)
-  (doall (map (partial draw-coords! ctx) snake-tail))
-  state)
-
-(defn draw-food! [{:keys [ctx food-pos] :as state}]
-  (if food-pos
-    (draw-coords! ctx food-pos food-color-string) nil)
-  state)
-
-(defn draw-background! [{:keys [ctx] :as state}]
-  (do
-    (set! (.-fillStyle ctx) background-color-string)
-    (.fillRect ctx 0 0 canvas-width canvas-height)
-    state))
-
-(defn draw-border! [{:keys [ctx] :as state}]
-  (do
-    (set! (.-fillStyle ctx) border-color-string)
-    (let [bottom-row-pos (* square-size (inc rows))
-          right-edge-pos (* square-size (inc columns))]
-
-      (.fillRect ctx 0 0 canvas-width square-size)
-      (.fillRect ctx 0 0 square-size canvas-height)
-      (.fillRect ctx right-edge-pos 0 square-size canvas-height)
-      (.fillRect ctx 0 bottom-row-pos canvas-width square-size))
-    )
-  state)
-
-;;; state updates
-(defn truncate-snake-tail [{:keys [score snake-tail] :as state}]
-  (let [current-snake-length (inc (count snake-tail))
-        max-length (+ score starting-snake-length)]
-    (if (< max-length current-snake-length)
-      (recur (assoc state :snake-tail (pop snake-tail)))
-      state)))
+(memoize
+ (defn all-positions [columns rows] (for [x (range columns)
+                                          y (range rows)]
+                                      [x y])))
 
 (defn update-x [x direction]
   (case direction
@@ -129,12 +84,12 @@
 
 ;;; Input Stuff
 
-(defn empty-positions [{:keys [x y tail] :as state}]
+(defn empty-positions [{:keys [x y tail columns rows] :as state}]
   ;; (-> all-positions
   ;;     filter #(TODO))
-  all-positions)
+  all-positions columns rows)
 
-(defn create-food [{:keys [food-pos x y tail] :as state}]
+(defn create-food [{:keys [food-pos x y tail columns rows] :as state}]
   (if-not food-pos
     (let [empty-positions (empty-positions state)]
       (assoc state
@@ -182,16 +137,23 @@
   [seq elm]
   (some #(= elm %) seq))
 
-(defn out-of-bounds? [x y]
+(defn out-of-bounds? [x y columns rows]
   (not (and (< -1 x columns)
             (< -1 y rows))))
 
-(defn check-game-over [{:keys [x y snake-tail] :as state}]
+(defn check-game-over [{:keys [x y snake-tail columns rows] :as state}]
   ;; (println (str "["x ","y "] " snake-tail))
   (if (or (in? snake-tail [x y])
-          (out-of-bounds? x y))
+          (out-of-bounds? x y columns rows))
     (assoc state :running false)
     state))
+
+(defn truncate-snake-tail [{:keys [score snake-tail] :as state}]
+  (let [current-snake-length (inc (count snake-tail))
+        max-length (+ score starting-snake-length)]
+    (if (< max-length current-snake-length)
+      (recur (assoc state :snake-tail (pop snake-tail)))
+      state)))
 
 (defn update-state [state]
   (-> state
@@ -232,16 +194,38 @@
     :down :up
     :error))
 
+(defn split-dual-direction [dual-direction]
+  (case dual-direction
+    :upleft [:up :left]
+    :upright [:up :right]
+    :downleft [:down :left]
+    :downright [:down :right]
+    [dual-direction]))
+
+(defn dont-reverse [current-direction new-direction]
+  (if (not= current-direction (opposite-direction new-direction))
+    new-direction
+    current-direction))
+
+(defn disambiguate-direction
+  "given a current direction and a compound input direction, returns which aspect of the compount direction should be applied"
+  [current-direction dual-direction]
+  (let [possible-directions (split-dual-direction dual-direction)]
+    ;(println possible-directions "(" current-direction ")")
+    (first (remove #{current-direction (opposite-direction current-direction)}
+                   possible-directions))))
+
 (defn turn
   "Change to given direction, provided that's not backwards"
   [state direction]
-  (if (= direction (opposite-direction (:direction state)))
-    state
+  (let [current-direction (:direction state)
+        direction  (or (disambiguate-direction current-direction direction)
+                       (dont-reverse current-direction direction))]
     (assoc state :direction direction)))
 
 (defn handle-movement-key-event [e keycode]
   (. e preventDefault)
-  (swap! state assoc :ai false)
+;  (disable-ai!)
   (let [direction (keycodes->direction keycode)]
     (do
       (go (>! input-chan direction)))))
@@ -249,8 +233,8 @@
 (defn toggle-ai [{:keys [ai] :as state}]
   (assoc state :ai (not ai)))
 
-;; Note that the defonce around the addEventListner stops this function from being
-;; updated automatically.
+;; Note that the defonce around the addEventListener stops this function from
+;; being updated automatically.
 (defn key-down-handler! [e & args]
   ;; (println (str "key-down-handler!. " (js-keys e))) ; js-keys is a pretty handy function.
   (let [keycode (.-keyCode e)]
@@ -262,35 +246,28 @@
 
 (fw/defonce key-listener (.addEventListener js/document "keydown" key-down-handler!))
 
-(defn immediate-mode-render! [state]
-  ;; (println (str "immediate-mode-render! state: " state))
-  (let [ctx (get-context "canvas")
-        state (assoc state :ctx ctx)]
-    (do
-      (.setTransform ctx  1 0 0 1 0 0)
-      (draw-background! state)
-      (draw-border! state)
-      (.setTransform ctx  1 0 0 1 square-size square-size)
-      (draw-snake-tail! state)
-      (draw-snake-head! state)
-      (draw-food! state)
-
-      ;; (set! (.-fillStyle ctx) "white")
-      ;; (set! (.-font ctx) "bold 12px Arial")
-      ;; (.fillText ctx (str "Score: " (:score state)) 0 -3)
-      )))
 
 ;;; TODO: move rendering out into requestAnimationFrame
 (defn tick []
   (swap! state update-state)
-  (immediate-mode-render! @state))
+  (drawing/immediate-mode-render! @state))
+
+(defn ensure-running [{:keys [running] :as state}]
+  (println "ensure-running (" running ")")
+  (if-not running
+    (reset-state state)
+    state))
 
 (defn create-clock! []
   (go (while true
         (do (<! (timeout tick-speed))
             (let [[direction channel] (alts! [input-chan] :default nil)]
               (do
-                (if direction (swap! state turn direction))
+                (if direction
+                  (swap! state #(-> %
+                                    ensure-running
+                                    disable-ai
+                                    (turn direction))))
                 (tick)))))))
 
 (fw/defonce clock (create-clock!))
@@ -299,21 +276,60 @@
   (.log js/console  "key-handler"))
 
 (defn mouse-handler [e]
-  (.log js/console "mouse-handler")
-  (.preventDefault e))
+  (.log js/console "mouse-handler"))
 
+(defn mouse-event-to-column-row [e]
+  (let [clientX (.-clientX e)
+        clientY (.-clientY e)
+        target (.-target e)
+        bounding-client-rect (.getBoundingClientRect target)
+        left (.-left bounding-client-rect)
+        top (.-top bounding-client-rect)
+        canvas-x (int (- clientX left))
+        canvas-y (int (- clientY top))
+        playfield-x (- canvas-x drawing/square-size)
+        playfield-y (- canvas-y drawing/square-size)
+        column (int (/ playfield-x drawing/square-size))
+        row (int (/ playfield-y drawing/square-size))]
+    [column row]))
 
-(defn main-template [{:keys [score running]}]
-  (sab/html [:div.board {:onMouseDown mouse-handler
-                         onKeyDown key-handler
-                         }
-             [:h3.score (str "Score: " score)]
-             [:div "Arrow keys to move. 'a' to enable AI."]
-             [:p]
-             ;; (if-not running
-             ;;   [:a.start-button {:onClick #(reset-state)}
-             ;;    "START"])
-             ]))
+(defn column-row-to-input-direction [column row]
+  (let [state @state
+        columns (:columns state)
+        rows (:rows state)
+        up (<= row (/ rows 2))
+        down (not up)
+        left (<= column (/ columns 2))
+        right (not left)]
+    (cond
+     (and up left) :upleft
+     (and up right) :upright
+     (and down left) :downleft
+     (and down right) :downright)))
+
+(defn canvas-mouse-handler [e]
+  ;(.log js/console "canvas mouse handler")
+  (.preventDefault e)
+  (disable-ai!)
+  (let [[column row] (mouse-event-to-column-row e)]
+    ;(println (js-keys e))
+    (go (>! input-chan (column-row-to-input-direction column row)))))
+
+(defn main-template [{:keys [score running columns rows] :as state}]
+  (let [[canvas-width canvas-height] (drawing/canvas-size columns rows)]
+    (sab/html [:div.board {;:onMouseDown mouse-handler!
+                           onKeyDown key-handler}
+               [:h3.score (str "Score: " score)]
+               [:canvas#snakeCanvas {:onMouseDown canvas-mouse-handler
+                                     :height  canvas-height
+                                     :margin-left "200px auto"
+                                     }]
+               [:div "Arrow keys to move. 'a' to enable AI."]
+               ;; (if-not running
+               ;;   [:a.start-button {:onClick #(reset-state)}
+               ;;    "START"])
+               ])
+    ))
 
 (let [node (.getElementById js/document "dynamic-area")]
   (defn renderer [state]
