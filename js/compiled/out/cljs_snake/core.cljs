@@ -42,6 +42,7 @@
 
 ;; (def columns 18)
 ;; (def rows 14)
+(def debug (atom "Debug"))
 
 (fw/defonce state (atom (reset-state)))
 
@@ -253,7 +254,6 @@
   (drawing/immediate-mode-render! @state))
 
 (defn ensure-running [{:keys [running] :as state}]
-  (println "ensure-running (" running ")")
   (if-not running
     (reset-state state)
     state))
@@ -278,7 +278,7 @@
 (defn mouse-handler [e]
   (.log js/console "mouse-handler"))
 
-(defn mouse-event-to-column-row [e]
+(defn xy-to-column-row [e]
   (let [clientX (.-clientX e)
         clientY (.-clientY e)
         target (.-target e)
@@ -297,23 +297,49 @@
   (let [state @state
         columns (:columns state)
         rows (:rows state)
-        up (<= row (/ rows 2))
-        down (not up)
-        left (<= column (/ columns 2))
-        right (not left)]
+        x (:x state)
+        y (:y state)
+        ;; For now, clicking on the same row and/or column as the snakes
+        ;; head defaults to right and down.
+        ;; This feels better than throwing away clicks on the snakes head,
+        ;; but I suspect there's still room for improvement
+        up (< row y)
+        down (<= y row)
+        left (< column x)
+        right (<= x column)]
     (cond
      (and up left) :upleft
      (and up right) :upright
      (and down left) :downleft
-     (and down right) :downright)))
+     (and down right) :downright
+     up :up
+     left :left
+     right :right
+     down :down
+     :default nil)))
+
+(defn debug-event [e]
+  (let [keys (js-keys e)
+        values (map #(aget e %) keys)
+        key-value (zipmap keys values)]
+    (swap! debug (fn [_] key-value))))
+
+(defn canvas-xy-handler [e]
+  ;;(.log js/console "canvas mouse handler")
+  (disable-ai!)
+  (let [[column row] (xy-to-column-row e)
+        direction (column-row-to-input-direction column row)]
+    ;; (println (js-keys e))
+    (if direction (go (>! input-chan direction)))))
 
 (defn canvas-mouse-handler [e]
-  ;(.log js/console "canvas mouse handler")
   (.preventDefault e)
-  (disable-ai!)
-  (let [[column row] (mouse-event-to-column-row e)]
-    ;(println (js-keys e))
-    (go (>! input-chan (column-row-to-input-direction column row)))))
+  (canvas-xy-handler e))
+
+(defn canvas-touch-handler [e]
+  (.preventDefault e)
+  ;; (js-keys (aget (.-touches e) 0))
+  (canvas-xy-handler (aget (.-touches e) 0)))
 
 (defn main-template [{:keys [score running columns rows] :as state}]
   (let [[canvas-width canvas-height] (drawing/canvas-size columns rows)]
@@ -321,15 +347,13 @@
                            onKeyDown key-handler}
                [:h3.score (str "Score: " score)]
                [:canvas#snakeCanvas {:onMouseDown canvas-mouse-handler
+                                     :onTouchStart canvas-touch-handler
                                      :height  canvas-height
                                      :margin-left "200px auto"
                                      }]
                [:div "Arrow keys to move. 'a' to enable AI."]
-               ;; (if-not running
-               ;;   [:a.start-button {:onClick #(reset-state)}
-               ;;    "START"])
-               ])
-    ))
+               ;; [:div (str @debug)]
+               ])))
 
 (let [node (.getElementById js/document "dynamic-area")]
   (defn renderer [state]
