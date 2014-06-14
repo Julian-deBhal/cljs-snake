@@ -5,12 +5,16 @@
    [figwheel.client :as fw :include-macros true]
    [cljs.core.async :as async
     :refer [<! >! chan alts! timeout sliding-buffer]]
-   [cemerick.cljs.test :as t])
+   [cemerick.cljs.test :as t]
+   [clojure.browser.repl :as repl])
   (:require-macros [cljs.core.async.macros :refer [go]]
                    [cemerick.cljs.test :refer (is deftest with-test run-tests testing test-var)]))
+
 (enable-console-print!)
 
 ;(declare immediate-mode-render!)
+
+(fw/defonce repl-connection (repl/connect "http://localhost:9000/repl"))
 
 (def tick-speed 150)
 
