@@ -13,7 +13,7 @@ Arrow keys, ijkl, click or touch within the playfield to control the snake (and 
   
 Any other key resets the game.
 
-You can see the game running at http://julian-debhal.github.io/cljs-snake/
+You can see the game running at http://debhal.github.io/cljs-snake/
 and should work on desktop or mobile browsers.
 
 ## License
